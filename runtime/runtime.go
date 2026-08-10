@@ -191,7 +191,7 @@ type StackDefinition struct {
 // non-empty.
 func Stack(name string, fn func()) *StackDefinition {
 	if strings.TrimSpace(name) == "" {
-		panic("sdk.Stack: name is required")
+		panic("ubx.Stack: name is required")
 	}
 	return &StackDefinition{name: name, fn: fn}
 }
@@ -210,10 +210,10 @@ func newCollector(stackName string) *collector {
 
 func (c *collector) setIntent(summary string, sources []IntentSource) {
 	if c.intentInfo != nil {
-		panic("sdk.Intent: called more than once in a single Stack() body -- there is exactly one summary per stack")
+		panic("ubx.Intent: called more than once in a single Stack() body -- there is exactly one summary per stack")
 	}
 	if strings.TrimSpace(summary) == "" {
-		panic("sdk.Intent: summary is required and cannot be empty")
+		panic("ubx.Intent: summary is required and cannot be empty")
 	}
 	if sources == nil {
 		sources = []IntentSource{}
@@ -223,11 +223,11 @@ func (c *collector) setIntent(summary string, sources []IntentSource) {
 
 func (c *collector) addResource(binding ResourceBinding, name string, config any) *Computed {
 	if strings.TrimSpace(name) == "" {
-		panic(fmt.Sprintf("sdk.Resource: name is required (type %s)", binding.WireType))
+		panic(fmt.Sprintf("ubx.Resource: name is required (type %s)", binding.WireType))
 	}
 	address := c.stackName + "." + binding.WireType + "." + name
 	if c.seenAddresses[address] {
-		panic(fmt.Sprintf("sdk.Resource: duplicate resource %s %q in stack %q", binding.WireType, name, c.stackName))
+		panic(fmt.Sprintf("ubx.Resource: duplicate resource %s %q in stack %q", binding.WireType, name, c.stackName))
 	}
 	c.seenAddresses[address] = true
 
@@ -273,10 +273,10 @@ func (c *collector) addResource(binding ResourceBinding, name string, config any
 // unchanged as the real wire attribute names the caller wrote.
 func (c *collector) addOverride(address string, config map[string]any) {
 	if strings.TrimSpace(address) == "" {
-		panic("sdk.Override: address is required")
+		panic("ubx.Override: address is required")
 	}
 	if len(config) == 0 {
-		panic(fmt.Sprintf("sdk.Override: %q: config is required and cannot be empty", address))
+		panic(fmt.Sprintf("ubx.Override: %q: config is required and cannot be empty", address))
 	}
 	serialized := make(map[string]any, len(config))
 	for k, v := range config {
@@ -316,14 +316,14 @@ func PushBlueprintSource(name string) {
 // bug in generated code, not something to silently tolerate.
 func PopBlueprintSource() {
 	if len(blueprintSourceStack) == 0 {
-		panic("sdk.PopBlueprintSource: called with no matching PushBlueprintSource -- this should only ever be called by ubx blueprint build's own generated code")
+		panic("ubx.PopBlueprintSource: called with no matching PushBlueprintSource -- this should only ever be called by ubx blueprint build's own generated code")
 	}
 	blueprintSourceStack = blueprintSourceStack[:len(blueprintSourceStack)-1]
 }
 
 func (c *collector) finish() (*intentDoc, error) {
 	if c.intentInfo == nil {
-		return nil, fmt.Errorf("sdk.Stack(%q): Intent() was never called -- a missing summary is a collection-time hard failure", c.stackName)
+		return nil, fmt.Errorf("ubx.Stack(%q): Intent() was never called -- a missing summary is a collection-time hard failure", c.stackName)
 	}
 	resources := c.resources
 	if resources == nil {
@@ -365,7 +365,7 @@ func (s *StackDefinition) Evaluate() (doc *intentDoc, err error) {
 
 func requireCollector(caller string) *collector {
 	if current == nil {
-		panic(fmt.Sprintf("sdk.%s: called outside of an active Stack() evaluation", caller))
+		panic(fmt.Sprintf("ubx.%s: called outside of an active Stack() evaluation", caller))
 	}
 	return current
 }
