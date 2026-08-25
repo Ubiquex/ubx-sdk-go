@@ -143,6 +143,23 @@ type ResourceBinding struct {
 	Fields   FieldMap
 }
 
+// DataSourceBinding is ResourceBinding's own real sibling for a data
+// source (e.g. AwsDataEc2Instance) -- structurally identical (WireType
+// for data_sources[].type, Fields for Go-field-name -> wire-name
+// mapping of the LOOKUP object, the same role Fields plays for a
+// resource's own config), a distinct type rather than a reused
+// ResourceBinding only so a codegen'd package can never pass a
+// resource's own binding to Data() or vice versa by accident -- the Go
+// compiler catches that at the call site instead of it becoming a
+// runtime address-shape bug (docs/schema.md's own "Amendment: data
+// sources" -- WireType is expected to already carry the real
+// "data_"-prefixed convention that section pins, this type does not
+// prepend it itself).
+type DataSourceBinding struct {
+	WireType string
+	Fields   FieldMap
+}
+
 // ---------------------------------------------------------------------
 // intent/v1 document shape (docs/schema.md's own ubx:intent/v1) -- only
 // the fields this runtime actually populates.
@@ -162,12 +179,13 @@ type IntentInfo struct {
 }
 
 type intentDoc struct {
-	SchemaVersion int              `json:"schema_version"`
-	Kind          string           `json:"kind"`
-	Stack         string           `json:"stack"`
-	Intent        intentDocIntent  `json:"intent"`
-	Resources     []intentResource `json:"resources"`
-	Overrides     []intentOverride `json:"overrides,omitempty"`
+	SchemaVersion int                `json:"schema_version"`
+	Kind          string             `json:"kind"`
+	Stack         string             `json:"stack"`
+	Intent        intentDocIntent    `json:"intent"`
+	Resources     []intentResource   `json:"resources"`
+	DataSources   []intentDataSource `json:"data_sources,omitempty"`
+	Overrides     []intentOverride   `json:"overrides,omitempty"`
 }
 
 // intentOverride is one Override() call's own wire shape -- mirrors
@@ -192,6 +210,20 @@ type intentResource struct {
 	Name    string         `json:"name"`
 	Op      string         `json:"op"`
 	Config  any            `json:"config"`
+	Sources []IntentSource `json:"sources,omitempty"`
+}
+
+// intentDataSource is one Data() call's own wire shape (docs/schema.md's
+// own "Amendment: data sources") -- deliberately its own type, not
+// intentResource with Op left blank: there is no "op" field here at
+// all, since data_sources[] itself is the discriminator (an entry in
+// this array is always a read, never a create/modify) -- see that
+// amendment's own reasoning for why an "op": "read" field would be
+// nothing but an unnecessary field that can never say anything else.
+type intentDataSource struct {
+	Type    string         `json:"type"`
+	Name    string         `json:"name"`
+	Lookup  any            `json:"lookup"`
 	Sources []IntentSource `json:"sources,omitempty"`
 }
 
@@ -221,6 +253,7 @@ func Stack(name string, fn func()) *StackDefinition {
 type collector struct {
 	stackName     string
 	resources     []intentResource
+	dataSources   []intentDataSource
 	overrides     []intentOverride
 	seenAddresses map[string]bool
 	intentInfo    *intentDocIntent
@@ -276,6 +309,39 @@ func (c *collector) addResource(binding ResourceBinding, name string, config any
 		ir.Sources = []IntentSource{{Kind: "blueprint", Ref: blueprintSourceStack[len(blueprintSourceStack)-1]}}
 	}
 	c.resources = append(c.resources, ir)
+
+	return newComputed(address)
+}
+
+// addDataSource is addResource's own real sibling for Data() -- same
+// duplicate-address check (the identical shared seenAddresses map, so a
+// resource and a data source can never collide with each other either,
+// though in practice they never do: DataSourceBinding.WireType always
+// carries the real "data_" prefix docs/schema.md's own amendment pins,
+// so the two address spaces never actually overlap), same
+// blueprint-provenance wiring, same serializeConfig walk (identical
+// call, not a reimplementation -- a lookup value gets the exact same
+// $ref/$secret/$cross marker recognition a resource's own config
+// already gets, docs/schema.md's own "data_sources[].lookup" bullet).
+// The one real difference from addResource: no "op" field on the
+// built entry at all (intentDataSource's own doc comment has why) and
+// it appends to c.dataSources, a separate slice, never c.resources.
+func (c *collector) addDataSource(binding DataSourceBinding, name string, lookup any) *Computed {
+	if strings.TrimSpace(name) == "" {
+		panic(fmt.Sprintf("ubx.Data: name is required (type %s)", binding.WireType))
+	}
+	address := c.stackName + "." + binding.WireType + "." + name
+	if c.seenAddresses[address] {
+		panic(fmt.Sprintf("ubx.Data: duplicate data source %s %q in stack %q", binding.WireType, name, c.stackName))
+	}
+	c.seenAddresses[address] = true
+
+	serialized := serializeConfig(binding.Fields, lookup, address)
+	ds := intentDataSource{Type: binding.WireType, Name: name, Lookup: serialized}
+	if len(blueprintSourceStack) > 0 {
+		ds.Sources = []IntentSource{{Kind: "blueprint", Ref: blueprintSourceStack[len(blueprintSourceStack)-1]}}
+	}
+	c.dataSources = append(c.dataSources, ds)
 
 	return newComputed(address)
 }
@@ -357,6 +423,7 @@ func (c *collector) finish() (*intentDoc, error) {
 		Stack:         c.stackName,
 		Intent:        *c.intentInfo,
 		Resources:     resources,
+		DataSources:   c.dataSources,
 		Overrides:     c.overrides,
 	}, nil
 }
@@ -400,6 +467,16 @@ func requireCollector(caller string) *collector {
 // config.
 func Resource(binding ResourceBinding, name string, config any) *Computed {
 	return requireCollector("Resource").addResource(binding, name, config)
+}
+
+// Data declares one data source -- a lookup, never a create/modify
+// (docs/schema.md's own "Amendment: data sources"). Returns the
+// identical *Computed handle Resource() returns, on purpose: a data
+// source's own result wires into a sibling resource's config exactly
+// the way another resource's own output would, no separate reference
+// type or API for a caller to learn.
+func Data(binding DataSourceBinding, name string, lookup any) *Computed {
+	return requireCollector("Data").addDataSource(binding, name, lookup)
 }
 
 // Intent populates the emitted document's own intent.summary/sources.

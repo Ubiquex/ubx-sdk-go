@@ -31,6 +31,19 @@ type widgetConfig struct {
 	Timeouts any
 }
 
+var dataWidgetBinding = DataSourceBinding{
+	WireType: "data_fake_widget",
+	Fields: FieldMap{
+		"ID":   {WireName: "id"},
+		"Name": {WireName: "name"},
+	},
+}
+
+type dataWidgetLookup struct {
+	ID   any
+	Name any
+}
+
 type widgetTimeouts struct {
 	Create any
 }
@@ -213,4 +226,129 @@ func TestResourceOutsideStackIsHardFailure(t *testing.T) {
 		}
 	}()
 	Resource(widgetBinding, "a", widgetConfig{Name: "a"})
+}
+
+// --- Data() -- mirrors the Resource() tests above exactly (same
+// duplicate-address check, same marker-aware serializer, same
+// blueprint-provenance wiring) rather than a separate, narrower suite,
+// since addDataSource's own doc comment states it reuses those same
+// mechanisms unchanged.
+
+func TestBasicDataSourceRoundTrip(t *testing.T) {
+	def := Stack("demo", func() {
+		Intent(IntentInfo{Summary: "a summary"})
+		Data(dataWidgetBinding, "widget-a", dataWidgetLookup{
+			ID: "w-123",
+		})
+	})
+
+	out := evalJSON(t, def)
+	dataSources := out["data_sources"].([]any)
+	if len(dataSources) != 1 {
+		t.Fatalf("expected 1 data source, got %d", len(dataSources))
+	}
+	ds := dataSources[0].(map[string]any)
+	if ds["type"] != "data_fake_widget" || ds["name"] != "widget-a" {
+		t.Fatalf("unexpected data source shape: %v", ds)
+	}
+	if _, present := ds["op"]; present {
+		t.Fatalf("data_sources[] entry must not carry an op field, got: %v", ds)
+	}
+	lookup := ds["lookup"].(map[string]any)
+	if lookup["id"] != "w-123" {
+		t.Fatalf("unexpected lookup: %v", lookup)
+	}
+	if _, present := lookup["name"]; present {
+		t.Fatalf("unset field leaked into lookup: %v", lookup)
+	}
+}
+
+// TestDataSourceResultFeedsResourceConfig is the design's own core
+// requirement: Data() returns the identical *Computed handle Resource()
+// does, so its result wires into a sibling resource's config through
+// the exact same $ref serialization -- no separate reference type.
+func TestDataSourceResultFeedsResourceConfig(t *testing.T) {
+	def := Stack("demo", func() {
+		Intent(IntentInfo{Summary: "s"})
+		looked := Data(dataWidgetBinding, "existing", dataWidgetLookup{ID: "w-123"})
+		Resource(widgetBinding, "b", widgetConfig{Owner: looked.Field("name")})
+	})
+
+	out := evalJSON(t, def)
+	resources := out["resources"].([]any)
+	cfg := resources[0].(map[string]any)["config"].(map[string]any)
+	ownerRef := cfg["owner_ref"].(map[string]any)
+	ref := ownerRef["$ref"].(map[string]any)
+	if ref["to"] != "demo.data_fake_widget.existing.name" {
+		t.Fatalf("unexpected $ref into a data source's own result: %v", ref)
+	}
+}
+
+// TestResourceComputedFeedsDataSourceLookup is the reverse direction of
+// the same requirement: a data source's own lookup can reference a
+// sibling resource's computed output (e.g. looking an instance up by an
+// ID a same-batch create just produced) -- the identical $ref
+// resolution a resource's config already gets, reused unchanged.
+func TestResourceComputedFeedsDataSourceLookup(t *testing.T) {
+	def := Stack("demo", func() {
+		Intent(IntentInfo{Summary: "s"})
+		created := Resource(widgetBinding, "a", widgetConfig{Name: "a"})
+		Data(dataWidgetBinding, "lookup-created", dataWidgetLookup{ID: created.Field("id")})
+	})
+
+	out := evalJSON(t, def)
+	dataSources := out["data_sources"].([]any)
+	lookup := dataSources[0].(map[string]any)["lookup"].(map[string]any)
+	idRef := lookup["id"].(map[string]any)["$ref"].(map[string]any)
+	if idRef["to"] != "demo.fake_widget.a.id" {
+		t.Fatalf("unexpected $ref in a data source's own lookup: %v", idRef)
+	}
+}
+
+func TestDuplicateDataSourceAddressIsHardFailure(t *testing.T) {
+	def := Stack("demo", func() {
+		Intent(IntentInfo{Summary: "s"})
+		Data(dataWidgetBinding, "a", dataWidgetLookup{ID: "1"})
+		Data(dataWidgetBinding, "a", dataWidgetLookup{ID: "2"})
+	})
+	_, err := def.Evaluate()
+	if err == nil || !strings.Contains(err.Error(), "duplicate data source") {
+		t.Fatalf("expected duplicate-data-source error, got %v", err)
+	}
+}
+
+func TestDataSourceMissingNameIsHardFailure(t *testing.T) {
+	def := Stack("demo", func() {
+		Intent(IntentInfo{Summary: "s"})
+		Data(dataWidgetBinding, "", dataWidgetLookup{ID: "1"})
+	})
+	_, err := def.Evaluate()
+	if err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("expected missing-name error, got %v", err)
+	}
+}
+
+func TestDataSourceOutsideStackIsHardFailure(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil || !strings.Contains(r.(string), "called outside of an active Stack") {
+			t.Fatalf("expected panic about calling outside Stack(), got %v", r)
+		}
+	}()
+	Data(dataWidgetBinding, "a", dataWidgetLookup{ID: "1"})
+}
+
+// TestNoDataSourcesOmitsFieldEntirely: a stack that never calls Data()
+// must not carry a "data_sources" key at all -- the overwhelming
+// majority of existing programs, zero wire-format change for them.
+func TestNoDataSourcesOmitsFieldEntirely(t *testing.T) {
+	def := Stack("demo", func() {
+		Intent(IntentInfo{Summary: "s"})
+		Resource(widgetBinding, "a", widgetConfig{Name: "a"})
+	})
+
+	out := evalJSON(t, def)
+	if _, present := out["data_sources"]; present {
+		t.Fatalf("expected no data_sources key when Data() was never called, got: %v", out["data_sources"])
+	}
 }
