@@ -29,7 +29,12 @@ SDK consumers).
   every `ubx-sdk-<provider>` repo AND `ubx` itself (`go:embed` build input).
   Verify the real, separate published module directly (Go module proxy or
   `gh api repos/Ubiquex/ubx-sdk-go/tags`) before claiming a fix is live — a
-  commit to this repo's own `main` is NOT the same as "published" (`ubiquex`'s
-  own CLAUDE.md rule 8; this exact class of mistake already happened once,
-  UBI-131, reported "published" across multiple sessions when only the
-  monorepo's own copy had changed).
+  commit to this repo's own `main` is NOT the same as "published". Never
+  infer "published" from a commit to the monorepo's own copy alone
+  (`ubiquex`'s own CLAUDE.md rule 8). This exact class of mistake already
+  happened to THIS repo once (UBI-131): a Go fix was reported "committed and
+  pushed" across multiple session summaries, but only the monorepo's own
+  copy had changed — this repo itself was never touched, still showing its
+  original scaffold commit a full day later, caught only when the founder
+  pushed back on the status claim and a real `git log` was run against this
+  actual repo, not the monorepo.
