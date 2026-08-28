@@ -42,3 +42,14 @@ SDK consumers).
   original scaffold commit a full day later, caught only when the founder
   pushed back on the status claim and a real `git log` was run against this
   actual repo, not the monorepo.
+
+## Architecture documentation
+
+A change to this runtime's own real contract — a new marker convention
+(alongside `$computed`/`$secret`/`$ephemeral`), a new required field on
+a generated binding's own runtime shape, a change to how a proposal's
+resolved values reach the wire — is architectural and gets its
+`ubiquex-internals` page (the developer documentation site) written or
+updated in the same body of work, never a follow-up. A bug fix inside
+the existing contract doesn't qualify. Matches `ubiquex` CLAUDE.md
+rule 10.
