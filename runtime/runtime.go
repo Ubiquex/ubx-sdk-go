@@ -138,9 +138,29 @@ type FieldMap map[string]FieldSpec
 // ResourceBinding is what a codegen'd package exports per resource type
 // (e.g. AwsDbInstance) -- WireType for resources[].type, Fields for
 // Go-field-name -> wire-name mapping at evaluation time.
+//
+// BlueprintName (UBI-225) is empty for an ordinary provider SDK binding
+// (sdk/codegen/templates/go never sets it) -- set only by a blueprint's
+// own generated bindings.go (blueprint/gogen.go's own renderGoBindings),
+// to that blueprint's own bare declared name, the SAME value its
+// generated wrapper function passes to PushBlueprintSource. This is
+// provenance carried on the BINDING itself, not just on the call scope:
+// before this field existed, a resource built by calling
+// sdk.Resource(SomeBlueprintBinding, name, SomeConfig{...}) directly --
+// importing a blueprint's own exported binding/config and constructing
+// the resource by hand, never calling the blueprint's own wrapper
+// function at all -- got zero provenance, indistinguishable from an
+// ordinary hand-written resource, even though the binding itself came
+// from a blueprint. addResource below checks this field as a fallback
+// exactly when blueprintSourceStack is empty, so a resource built this
+// way now gets the identical (bare, later stamped to a full hash by
+// StampDirectCallProvenance the same way) blueprint source a call
+// through the wrapper function already produces -- provenance is a
+// property of the binding, not of caller discipline.
 type ResourceBinding struct {
-	WireType string
-	Fields   FieldMap
+	WireType      string
+	Fields        FieldMap
+	BlueprintName string
 }
 
 // DataSourceBinding is ResourceBinding's own real sibling for a data
@@ -288,25 +308,8 @@ func (c *collector) addResource(binding ResourceBinding, name string, config any
 
 	serialized := serializeConfig(binding.Fields, config, address)
 	ir := intentResource{Type: binding.WireType, Name: name, Op: "create", Config: serialized}
-	if len(blueprintSourceStack) > 0 {
-		// UBI-126: this Resource() call is executing from inside a
-		// compiled blueprint's own generated function body (pushBlueprintSource
-		// below, called only by ubx blueprint build's own generated code --
-		// never by a stack author directly). The innermost (most recently
-		// pushed) scope wins, matching ordinary lexical-scoping intuition
-		// and staying correct if a blueprint ever calls another blueprint
-		// (nesting itself is UBI-121, unbuilt, but this doesn't need to
-		// special-case its absence). Ref is deliberately the blueprint's
-		// own bare declared name here, NOT yet "name:content_hash" -- this
-		// process has no way to compute a real content hash for itself
-		// (the compiled binary doesn't know its own on-disk blueprint
-		// directory, and baking a hash into source that gets hashed
-		// itself is circular) -- ubx resolve's own external
-		// StampDirectCallProvenance step (blueprint package) resolves the
-		// bare name to a real content hash afterward, the same way
-		// blueprint.ExpandCalls already computes one externally for
-		// diagram/md calls, just at a different pipeline stage.
-		ir.Sources = []IntentSource{{Kind: "blueprint", Ref: blueprintSourceStack[len(blueprintSourceStack)-1]}}
+	if blueprintSource := currentBlueprintSource(binding); blueprintSource != "" {
+		ir.Sources = []IntentSource{{Kind: "blueprint", Ref: blueprintSource}}
 	}
 	c.resources = append(c.resources, ir)
 
@@ -383,9 +386,31 @@ func (c *collector) addOverride(address string, config map[string]any) {
 // different at all: the scope is entirely internal to code `ubx
 // blueprint build` itself generates. A plain stack that never imports a
 // blueprint never pushes anything, so blueprintSourceStack stays empty
-// and intentResource.Sources stays unset -- zero wire-format change for
-// the overwhelming majority of ordinary SDK programs.
+// and intentResource.Sources stays unset unless the binding itself
+// carries a BlueprintName (currentBlueprintSource below) -- zero
+// wire-format change for the overwhelming majority of ordinary SDK
+// programs.
 var blueprintSourceStack []string
+
+// currentBlueprintSource (UBI-225) is what addResource actually checks:
+// the innermost active PushBlueprintSource scope if one is open, or --
+// exactly when it isn't -- the binding's own carried BlueprintName. In
+// every case ubx blueprint build's own generated code produces, the two
+// never disagree: a wrapper function's own sdk.Resource() calls run
+// against that SAME blueprint's own bindings, both stamped with the
+// identical name by the same codegen run, so which one wins is only
+// ever load-bearing for the one case this field exists to fix -- a
+// binding used OUTSIDE any open scope at all (no wrapper function
+// call), where the scope check alone would find nothing and the binding
+// is the only signal left. Returns "" (no provenance) for an ordinary
+// resource: no open scope, and a binding with no BlueprintName -- the
+// overwhelming common case, completely unaffected.
+func currentBlueprintSource(binding ResourceBinding) string {
+	if len(blueprintSourceStack) > 0 {
+		return blueprintSourceStack[len(blueprintSourceStack)-1]
+	}
+	return binding.BlueprintName
+}
 
 // PushBlueprintSource marks every sdk.Resource() call for the duration
 // of the current scope (until the matching PopBlueprintSource) as

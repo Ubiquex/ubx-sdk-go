@@ -352,3 +352,94 @@ func TestNoDataSourcesOmitsFieldEntirely(t *testing.T) {
 		t.Fatalf("expected no data_sources key when Data() was never called, got: %v", out["data_sources"])
 	}
 }
+
+// blueprintWidgetBinding (UBI-225) is widgetBinding's own real sibling,
+// differing in exactly one field: BlueprintName is set, matching what
+// blueprint/gogen.go's own renderGoBindings now stamps into a real
+// blueprint's own generated bindings.go. Used by every test below that
+// needs a binding a blueprint actually produced, as opposed to an
+// ordinary provider SDK binding (sdk/codegen/templates/go never sets
+// this field, so widgetBinding above stays a correct stand-in for that
+// case).
+var blueprintWidgetBinding = ResourceBinding{
+	WireType:      "fake_widget",
+	Fields:        FieldMap{"Name": {WireName: "name"}},
+	BlueprintName: "ci-platform",
+}
+
+func resourceSources(t *testing.T, res map[string]any) []any {
+	t.Helper()
+	sources, _ := res["sources"].([]any)
+	return sources
+}
+
+// TestBlueprintBinding_StampsProvenanceWithoutOpenScope is UBI-225's own
+// required proof: a resource built by calling Resource() directly
+// against a blueprint's own exported binding -- never through that
+// blueprint's own generated wrapper function, so PushBlueprintSource is
+// never called at all -- must still carry a real blueprint source. Before
+// this fix, importing a blueprint's own bindings.go directly and
+// constructing a resource by hand produced zero provenance, silently
+// indistinguishable from an ordinary hand-written resource.
+func TestBlueprintBinding_StampsProvenanceWithoutOpenScope(t *testing.T) {
+	def := Stack("demo", func() {
+		Intent(IntentInfo{Summary: "s"})
+		Resource(blueprintWidgetBinding, "bypass", widgetConfig{Name: "bypass-widget"})
+	})
+
+	out := evalJSON(t, def)
+	res := out["resources"].([]any)[0].(map[string]any)
+	sources := resourceSources(t, res)
+	if len(sources) != 1 {
+		t.Fatalf("expected exactly 1 source, got %d: %v", len(sources), res)
+	}
+	src := sources[0].(map[string]any)
+	if src["kind"] != "blueprint" || src["ref"] != "ci-platform" {
+		t.Fatalf("expected {kind: blueprint, ref: ci-platform}, got %v", src)
+	}
+}
+
+// TestOrdinaryBinding_NoBlueprintName_NoProvenance confirms zero
+// regression: an ordinary provider SDK binding (BlueprintName never
+// set) still produces no "sources" key at all, exactly as before this
+// fix -- the overwhelming majority of real resources.
+func TestOrdinaryBinding_NoBlueprintName_NoProvenance(t *testing.T) {
+	def := Stack("demo", func() {
+		Intent(IntentInfo{Summary: "s"})
+		Resource(widgetBinding, "a", widgetConfig{Name: "a"})
+	})
+
+	out := evalJSON(t, def)
+	res := out["resources"].([]any)[0].(map[string]any)
+	if _, present := res["sources"]; present {
+		t.Fatalf("expected no sources key for an ordinary binding, got: %v", res["sources"])
+	}
+}
+
+// TestPushBlueprintSource_WinsOverBindingBlueprintName confirms the real
+// priority order when both signals are present at once: an open
+// PushBlueprintSource scope always wins over whatever BlueprintName the
+// binding itself carries. Every real call blueprint/gogen.go's own
+// generated code makes has both signals agree (a wrapper function's own
+// Resource() calls run against that SAME blueprint's own bindings), so
+// this case is never actually reachable through generated code today --
+// pinned here anyway, as real, deliberate behavior, not left unspecified.
+func TestPushBlueprintSource_WinsOverBindingBlueprintName(t *testing.T) {
+	def := Stack("demo", func() {
+		Intent(IntentInfo{Summary: "s"})
+		PushBlueprintSource("outer-blueprint")
+		Resource(blueprintWidgetBinding, "nested", widgetConfig{Name: "nested-widget"})
+		PopBlueprintSource()
+	})
+
+	out := evalJSON(t, def)
+	res := out["resources"].([]any)[0].(map[string]any)
+	sources := resourceSources(t, res)
+	if len(sources) != 1 {
+		t.Fatalf("expected exactly 1 source, got %d: %v", len(sources), res)
+	}
+	src := sources[0].(map[string]any)
+	if src["ref"] != "outer-blueprint" {
+		t.Fatalf("expected the open scope (%q) to win over the binding's own BlueprintName (%q), got ref %v", "outer-blueprint", blueprintWidgetBinding.BlueprintName, src["ref"])
+	}
+}
