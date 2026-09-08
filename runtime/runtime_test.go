@@ -443,3 +443,62 @@ func TestPushBlueprintSource_WinsOverBindingBlueprintName(t *testing.T) {
 		t.Fatalf("expected the open scope (%q) to win over the binding's own BlueprintName (%q), got ref %v", "outer-blueprint", blueprintWidgetBinding.BlueprintName, src["ref"])
 	}
 }
+
+// A nil resource reference is named, not a nil pointer dereference.
+//
+// An interface holding a nil *Computed is not itself nil, so the
+// value == nil guard at the top of serializeGenericOrMarker does not
+// catch it and the *Computed case is matched with v == nil. Before this
+// it dereferenced v.address and the program died with "invalid memory
+// address or nil pointer dereference", naming no resource and no cause.
+//
+// It needs no sentinel to detect, unlike Python and TypeScript, because
+// Go can tell it apart from an unset field: an unset `any` config field
+// is a nil INTERFACE and serializeConfig skips it as "not set" well
+// before reaching here. Only an explicitly-passed nil reference arrives.
+func TestSerialize_NilComputedReference_IsNamedNotADereference(t *testing.T) {
+	var absent *Computed
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("passing a nil resource reference into a config must fail")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected a described failure, got %T: %v", r, r)
+		}
+		for _, want := range []string{"demo.fake_widget.x", "nil resource reference", "omit it entirely"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("failure does not say %q: %s", want, msg)
+			}
+		}
+		if strings.Contains(msg, "invalid memory address") {
+			t.Errorf("still a raw nil pointer dereference: %s", msg)
+		}
+	}()
+
+	serializeGenericOrMarker(any(absent), "demo.fake_widget.x")
+}
+
+// The neighbouring case that must keep working: an unset config field is
+// a nil interface, skipped as "not set" by serializeConfig, and never
+// reaches the check above.
+func TestSerializeConfig_UnsetFieldStillOmitted(t *testing.T) {
+	type cfg struct {
+		Name  any
+		Extra any
+	}
+	fm := FieldMap{
+		"Name":  FieldSpec{WireName: "name"},
+		"Extra": FieldSpec{WireName: "extra"},
+	}
+	out := serializeConfig(fm, cfg{Name: "n"}, "demo.fake_widget.x")
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"name":"n"}` {
+		t.Fatalf("unset field was not omitted: %s", b)
+	}
+}

@@ -562,6 +562,22 @@ func serializeGenericOrMarker(value any, addressForErrors string) (result any, h
 	}
 	switch v := value.(type) {
 	case *Computed:
+		// A typed nil reaches here and is NOT caught by the value == nil
+		// check above: an interface holding a nil *Computed is not itself
+		// nil. Without this it dereferenced v.address and the program
+		// died with "invalid memory address or nil pointer dereference",
+		// a raw Go runtime error naming no resource and no cause.
+		//
+		// It is distinguishable from an unset field, which is why this
+		// can be its own error rather than needing a sentinel: an unset
+		// `any` config field is a nil INTERFACE and serializeConfig skips
+		// it as "not set -- omitted" long before reaching here. Only an
+		// explicitly-passed nil *Computed arrives, and that is always a
+		// reference to a resource that does not exist.
+		if v == nil {
+			panic(fmt.Sprintf("resource %q: a nil resource reference cannot appear in a config -- "+
+				"this is a reference to a resource that was never created. To leave the field unset, omit it entirely rather than passing a nil reference", addressForErrors))
+		}
 		return map[string]any{"$ref": map[string]any{"to": v.address}}, true
 	case SecretMarker:
 		return map[string]any{"$secret": map[string]any{"backend": v.Backend, "path": v.Path}}, true
