@@ -649,8 +649,21 @@ func serializeConfig(fields FieldMap, value any, addressForErrors string) any {
 			continue // unexported
 		}
 		fieldValue := rv.Field(i)
+		// An unset field is omitted entirely, never sent as null.
+		//
+		// A nil INTERFACE covers the generated Config structs, whose
+		// fields are all `any`. A nil POINTER covers a hand-written
+		// config struct, where `*int` is how Go says "optional" and nil
+		// is how it says "not given" -- without this, such a field
+		// serialized as an explicit null, which is not the same thing
+		// and is not harmless: SQS rejects FifoQueue outright rather
+		// than defaulting it, so an attribute the author meant to omit
+		// becomes a 400 from the provider (UBI-258).
 		if fieldValue.Kind() == reflect.Interface && fieldValue.IsNil() {
-			continue // not set -- omitted, matching TS's "key not present at all"
+			continue
+		}
+		if fieldValue.Kind() == reflect.Ptr && fieldValue.IsNil() {
+			continue
 		}
 
 		spec, ok := fields[field.Name]
@@ -760,3 +773,15 @@ func serializeOpaque(value any, addressForErrors string) any {
 		panic(fmt.Sprintf("resource %q: unrepresentable config value of kind %s", addressForErrors, rv.Kind()))
 	}
 }
+
+// Ptr returns a pointer to v.
+//
+// Go has no way to write an optional argument, so a hand-written
+// blueprint's own Config struct says "optional" with a pointer field
+// and "not given" with nil. That makes every call site need a pointer
+// to a literal, which Go cannot take directly: `&60` does not compile.
+// Without this helper every caller writes its own one-line generic, so
+// the runtime carries it once.
+//
+//	bp.UbxAwsSqs(bp.Config{Name: "events", VisibilityTimeout: sdk.Ptr(60)})
+func Ptr[T any](v T) *T { return &v }
