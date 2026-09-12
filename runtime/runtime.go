@@ -206,6 +206,11 @@ type intentDoc struct {
 	Resources     []intentResource   `json:"resources"`
 	DataSources   []intentDataSource `json:"data_sources,omitempty"`
 	Overrides     []intentOverride   `json:"overrides,omitempty"`
+	// BlueprintOutputs is output name -> the resolved address that
+	// output's own Computed refers to (UBI-261). Empty and omitted for
+	// every program that never calls BlueprintOutputs, which is every
+	// program except a blueprint caller.
+	BlueprintOutputs map[string]string `json:"blueprint_outputs,omitempty"`
 }
 
 // intentOverride is one Override() call's own wire shape -- mirrors
@@ -271,12 +276,16 @@ func Stack(name string, fn func()) *StackDefinition {
 }
 
 type collector struct {
-	stackName     string
-	resources     []intentResource
-	dataSources   []intentDataSource
-	overrides     []intentOverride
-	seenAddresses map[string]bool
-	intentInfo    *intentDocIntent
+	stackName string
+	// blueprintOutputs is output name -> resolved address, populated by
+	// BlueprintOutputs (UBI-261). Nil for every program that never
+	// calls it.
+	blueprintOutputs map[string]string
+	resources        []intentResource
+	dataSources      []intentDataSource
+	overrides        []intentOverride
+	seenAddresses    map[string]bool
+	intentInfo       *intentDocIntent
 }
 
 func newCollector(stackName string) *collector {
@@ -420,6 +429,40 @@ func currentBlueprintSource(binding ResourceBinding) string {
 // module/import path, and never (cannot be, see addResource's own
 // comment) a content hash. Called only by generated blueprint code, never
 // meant to be called by a stack author's own code directly.
+// BlueprintOutputs records what a called blueprint returned, so the
+// caller of that blueprint can reference its outputs (UBI-261).
+//
+// This exists because the address a blueprint's output refers to is
+// knowable only while the blueprint RUNS. An Ubxfile declared each
+// output as a literal "<resource-slug>.<attribute>" pair, which could
+// be read without running anything; a blueprint that is code returns a
+// Computed, and which attribute of which resource that points at can
+// depend on the blueprint's own branching. So it is reported from
+// inside the evaluation rather than derived from outside it.
+//
+// Called by the synthesized caller program ubx writes to invoke a
+// blueprint (blueprint/invokeschema.go), never by a person. A nil
+// entry is skipped rather than recorded as an empty address: a
+// blueprint may legitimately return no value for a declared output,
+// and the caller reports that as its own named error, where it can say
+// which output and which blueprint.
+//
+// Calling it twice merges, last write winning per key, so a caller
+// that invokes more than one blueprint is additive rather than
+// overwriting.
+func BlueprintOutputs(outputs map[string]*Computed) {
+	c := requireCollector("BlueprintOutputs")
+	if c.blueprintOutputs == nil {
+		c.blueprintOutputs = map[string]string{}
+	}
+	for name, computed := range outputs {
+		if computed == nil {
+			continue
+		}
+		c.blueprintOutputs[name] = computed.Address()
+	}
+}
+
 func PushBlueprintSource(name string) {
 	blueprintSourceStack = append(blueprintSourceStack, name)
 }
@@ -443,13 +486,14 @@ func (c *collector) finish() (*intentDoc, error) {
 		resources = []intentResource{}
 	}
 	return &intentDoc{
-		SchemaVersion: 1,
-		Kind:          "ubx:intent/v1",
-		Stack:         c.stackName,
-		Intent:        *c.intentInfo,
-		Resources:     resources,
-		DataSources:   c.dataSources,
-		Overrides:     c.overrides,
+		SchemaVersion:    1,
+		Kind:             "ubx:intent/v1",
+		Stack:            c.stackName,
+		Intent:           *c.intentInfo,
+		Resources:        resources,
+		DataSources:      c.dataSources,
+		Overrides:        c.overrides,
+		BlueprintOutputs: c.blueprintOutputs,
 	}, nil
 }
 
