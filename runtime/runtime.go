@@ -414,9 +414,27 @@ var blueprintSourceStack []string
 // is the only signal left. Returns "" (no provenance) for an ordinary
 // resource: no open scope, and a binding with no BlueprintName -- the
 // overwhelming common case, completely unaffected.
+// UBI-266 adds a third signal between the two: the CALL SITE. A
+// blueprint written as code has no generated wrapper, so it never
+// pushes and its bindings are ordinary provider bindings carrying no
+// BlueprintName. Both existing signals find nothing, and every resource
+// it created used to reach the ledger with no source at all. Call-site
+// attribution needs nothing from the blueprint's author, which is the
+// point: a marker that can be forgotten produces a ledger that is
+// silently incomplete.
+//
+// It sits BELOW an open scope and ABOVE the binding. Below the scope
+// because a generated wrapper stating its own name is a direct claim,
+// not an inference. Above the binding because the two answer different
+// questions when they disagree: if blueprint A's code constructs a
+// resource from blueprint B's exported binding, A is what produced the
+// resource, and the call site is the only signal that says so.
 func currentBlueprintSource(binding ResourceBinding) string {
 	if len(blueprintSourceStack) > 0 {
 		return blueprintSourceStack[len(blueprintSourceStack)-1]
+	}
+	if name := callSiteBlueprint(); name != "" {
+		return name
 	}
 	return binding.BlueprintName
 }
